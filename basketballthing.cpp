@@ -8,13 +8,31 @@
 
 using json = nlohmann::json;
 
-// Function to handle the data coming back from the API
+int minsToSeconds(std::string m) {
+    if (m.empty() || m == "00" || m == "0") return 0;
+    try {
+        size_t pos = m.find(':');
+        if (pos != std::string::npos) {
+            int mins = std::stoi(m.substr(0, pos));
+            int secs = std::stoi(m.substr(pos + 1));
+            return (mins * 60) + secs;
+        }
+        return std::stoi(m) * 60;
+    } catch (...) { return 0; }
+}
+
+struct PlayerStats {
+    std::string name;
+    std::string team;
+    int pts, reb, ast, stl, blk, seconds;
+    std::string minStr;
+};
+
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
-// Function to talk to the NBA API
 std::string apiRequest(std::string url, std::string apiKey) {
     CURL* curl;
     CURLcode res;
@@ -42,15 +60,12 @@ int main() {
     std::cout << "Enter a date (YYYY-MM-DD): ";
     std::cin >> dateChoice;
 
-    // 1. Get Games
     auto gameJson = json::parse(apiRequest("https://api.balldontlie.io/v1/games?dates[]=" + dateChoice, apiKey));
     auto games = gameJson["data"];
-    if (games.empty()) { std::cout << "No games found for this date.\n"; return 0; }
+    if (games.empty()) { std::cout << "No games found.\n"; return 0; }
 
-    std::cout << "\n--- Select a Game ---\n";
     for (int i = 0; i < (int)games.size(); i++) {
-        std::cout << i + 1 << ") " << games[i]["visitor_team"]["abbreviation"] 
-                  << " @ " << games[i]["home_team"]["abbreviation"] << std::endl;
+        std::cout << i + 1 << ") " << games[i]["visitor_team"]["abbreviation"] << " @ " << games[i]["home_team"]["abbreviation"] << std::endl;
     }
 
     int gameChoice;
@@ -58,56 +73,56 @@ int main() {
     std::cin >> gameChoice;
     int selectedId = games[gameChoice - 1]["id"];
 
-    // 2. Get Stats for that Game
     auto stats = json::parse(apiRequest("https://api.balldontlie.io/v1/stats?per_page=100&game_ids[]=" + std::to_string(selectedId), apiKey))["data"];
     
-    std::string filename = "nba_stats_export.csv";
-    std::ofstream file(filename);
-    
-    // CSV Header for Excel
-    file << "Player,Team,PTS,REB,AST,MIN,STL,BLK\n";
-
-    int count = 0;
+    std::vector<PlayerStats> playerList;
     for (auto& s : stats) {
-        if (count >= 50) break;
+        std::string mStr = s.value("min", "0");
+        int p = s.value("pts", 0);
+        if ((mStr == "" || mStr == "0" || mStr == "00" || mStr == "0:00") && p == 0) continue;
 
-        // Extracting values safely
-        std::string mins = s.value("min", "");
-        int pts = s.value("pts", 0);
-        int reb = s.value("reb", 0);
-        int ast = s.value("ast", 0);
+        PlayerStats ps;
+        ps.name = s["player"].value("first_name", "") + " " + s["player"].value("last_name", "");
+        ps.team = s["team"]["abbreviation"];
+        ps.pts = p;
+        ps.reb = s.value("reb", 0);
+        ps.ast = s.value("ast", 0);
+        ps.stl = s.value("stl", 0);
+        ps.blk = s.value("blk", 0);
+        ps.minStr = mStr;
+        ps.seconds = minsToSeconds(mStr);
+        playerList.push_back(ps);
+    }
 
-        // THE FILTER: Skip if they didn't play (checking multiple indicators)
-        if ((mins == "" || mins == "0" || mins == "00" || mins == "0:00") && pts == 0 && reb == 0) {
-            continue;
+    // --- UPDATED TEAM + MINUTES SORTING ---
+    std::sort(playerList.begin(), playerList.end(), [](const PlayerStats& a, const PlayerStats& b) {
+        if (a.team != b.team) return a.team < b.team; // First sort by team name
+        return a.seconds > b.seconds;               // Then sort by minutes (descending)
+    });
+
+    std::string filename = "nba_team_report.csv";
+    std::ofstream file(filename);
+    file << "Player,,Team,MIN,PTS,REB,AST,STL,BLK\n";
+
+    std::string currentTeam = "";
+    for (const auto& p : playerList) {
+        // Add a blank row when the team changes to make it readable
+        if (currentTeam != "" && currentTeam != p.team) {
+            file << ",,,,,,,,\n"; 
         }
+        currentTeam = p.team;
 
-        // Write row to CSV
-        file << s["player"].value("first_name", "") << " " << s["player"].value("last_name", "") << ","
-             << s["team"]["abbreviation"] << ","
-             << pts << ","
-             << reb << ","
-             << ast << ","
-             << mins << ","
-             << s.value("stl", 0) << ","
-             << s.value("blk", 0) << "\n";
-        
-        count++;
+        file << p.name << ",," << p.team << "," << p.minStr << "," << p.pts << "," 
+             << p.reb << "," << p.ast << "," << p.stl << "," << p.blk << "\n";
     }
     file.close();
 
-    // 3. Launch Excel
-    if (count > 0) {
-        std::cout << "\nFound " << count << " active players. Opening in Excel..." << std::endl;
-        #ifdef _WIN32
-            system(("start excel " + filename).c_str());
-        #else
-            // Try Excel first; if fails, standard open
-            system(("open -a 'Microsoft Excel' " + filename + " || open " + filename).c_str());
-        #endif
-    } else {
-        std::cout << "No active player data found for this specific game." << std::endl;
-    }
+    std::cout << "\nStats grouped by team and sorted by minutes. Opening..." << std::endl;
+    #ifdef _WIN32
+        system(("start excel " + filename).c_str());
+    #else
+        system(("open -a 'Microsoft Excel' " + filename + " || open " + filename).c_str());
+    #endif
 
     return 0;
 }
