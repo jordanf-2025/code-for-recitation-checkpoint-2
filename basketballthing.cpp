@@ -7,13 +7,11 @@
 
 using json = nlohmann::json;
 
-// Function to handle API data stream
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
-// Function to make the actual API call
 std::string apiRequest(std::string url, std::string apiKey) {
     CURL* curl;
     CURLcode res;
@@ -41,57 +39,57 @@ int main() {
     std::cout << "Enter a date (YYYY-MM-DD): ";
     std::cin >> dateChoice;
 
-    // 1. Fetch Games for the date
-    std::string gameData = apiRequest("https://api.balldontlie.io/v1/games?dates[]=" + dateChoice, apiKey);
-    auto gameJson = json::parse(gameData);
+    auto gameJson = json::parse(apiRequest("https://api.balldontlie.io/v1/games?dates[]=" + dateChoice, apiKey));
     auto games = gameJson["data"];
+    if (games.empty()) { std::cout << "No games found.\n"; return 0; }
 
-    if (games.empty()) {
-        std::cout << "No games found for that date." << std::endl;
-        return 0;
-    }
-
-    std::vector<int> gameIds;
-    std::cout << "\n--- GAMES ON " << dateChoice << " ---\n";
     for (int i = 0; i < games.size(); i++) {
-        gameIds.push_back(games[i]["id"]);
-        std::cout << i + 1 << ") " << games[i]["visitor_team"]["abbreviation"] 
-                  << " @ " << games[i]["home_team"]["abbreviation"] << std::endl;
+        std::cout << i + 1 << ") " << games[i]["visitor_team"]["abbreviation"] << " @ " << games[i]["home_team"]["abbreviation"] << std::endl;
     }
 
-    int choice;
-    std::cout << "\nSelect game number for stats: ";
-    std::cin >> choice;
-    if (choice < 1 || choice > gameIds.size()) return 1;
+    int gameChoice;
+    std::cout << "\nSelect game number to get ALL stats: ";
+    std::cin >> gameChoice;
+    int selectedId = games[gameChoice - 1]["id"];
 
-    // 2. Fetch Box Score for selected game
-    int selectedId = gameIds[choice - 1];
-    std::string statsData = apiRequest("https://api.balldontlie.io/v1/stats?game_ids[]=" + std::to_string(selectedId), apiKey);
-    auto playerStats = json::parse(statsData)["data"];
-
-    // 3. Save to CSV
-    std::string filename = "nba_stats.csv";
+    // Fetch stats for the whole game
+    auto stats = json::parse(apiRequest("https://api.balldontlie.io/v1/stats?per_page=100&game_ids[]=" + std::to_string(selectedId), apiKey))["data"];
+    
+    std::string filename = "full_game_stats.csv";
     std::ofstream file(filename);
-    file << "sep=,\nPlayer,Team,MIN,PTS,REB,AST\n";
 
-    for (auto& s : playerStats) {
+    // CSV Headers
+    file << "Player,Team,PTS,REB,AST,MIN,STL,BLK,TO\n";
+
+    int count = 0;
+    for (auto& s : stats) {
+        if (count >= 50) break; // Hard limit of 50 players
+
+        std::string mins = s.value("min", "0");
+        // Filter out those who didn't play (0 minutes)
+        if (mins == "0" || mins == "00" || mins == "" || mins == "0:00") continue;
+
         file << s["player"].value("first_name", "") << " " << s["player"].value("last_name", "") << ","
-             << s["team"].value("abbreviation", "") << ","
-             << s.value("min", "0") << ","
+             << s["team"]["abbreviation"] << ","
              << s.value("pts", 0) << ","
              << s.value("reb", 0) << ","
-             << s.value("ast", 0) << "\n";
+             << s.value("ast", 0) << ","
+             << mins << ","
+             << s.value("stl", 0) << ","
+             << s.value("blk", 0) << ","
+             << s.value("turnover", 0) << "\n";
+        
+        count++;
     }
+
     file.close();
 
-    // 4. SMART OPEN (Detects Windows vs Mac)
-    std::cout << "Opening Excel..." << std::endl;
+    std::cout << "Successfully exported " << count << " players to " << filename << ". Opening Excel...\n";
+
 #ifdef _WIN32
-    std::string winCmd = "start excel " + filename;
-    system(winCmd.c_str());
-#elif __APPLE__
-    std::string macCmd = "open -a \"Microsoft Excel\" " + filename + " || open " + filename;
-    system(macCmd.c_str());
+    system(("start excel " + filename).c_str());
+#else
+    system(("open -a 'Microsoft Excel' " + filename).c_str());
 #endif
 
     return 0;
