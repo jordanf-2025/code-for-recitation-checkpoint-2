@@ -4,14 +4,17 @@
 #include <vector>
 #include <curl/curl.h>
 #include <nlohmann/json.hpp>
+#include <algorithm>
 
 using json = nlohmann::json;
 
+// Function to handle the data coming back from the API
 size_t WriteCallback(void* contents, size_t size, size_t nmemb, std::string* userp) {
     userp->append((char*)contents, size * nmemb);
     return size * nmemb;
 }
 
+// Function to talk to the NBA API
 std::string apiRequest(std::string url, std::string apiKey) {
     CURL* curl;
     CURLcode res;
@@ -39,12 +42,15 @@ int main() {
     std::cout << "Enter a date (YYYY-MM-DD): ";
     std::cin >> dateChoice;
 
+    // 1. Get Games
     auto gameJson = json::parse(apiRequest("https://api.balldontlie.io/v1/games?dates[]=" + dateChoice, apiKey));
     auto games = gameJson["data"];
-    if (games.empty()) { std::cout << "No games found.\n"; return 0; }
+    if (games.empty()) { std::cout << "No games found for this date.\n"; return 0; }
 
+    std::cout << "\n--- Select a Game ---\n";
     for (int i = 0; i < (int)games.size(); i++) {
-        std::cout << i + 1 << ") " << games[i]["visitor_team"]["abbreviation"] << " @ " << games[i]["home_team"]["abbreviation"] << std::endl;
+        std::cout << i + 1 << ") " << games[i]["visitor_team"]["abbreviation"] 
+                  << " @ " << games[i]["home_team"]["abbreviation"] << std::endl;
     }
 
     int gameChoice;
@@ -52,42 +58,56 @@ int main() {
     std::cin >> gameChoice;
     int selectedId = games[gameChoice - 1]["id"];
 
+    // 2. Get Stats for that Game
     auto stats = json::parse(apiRequest("https://api.balldontlie.io/v1/stats?per_page=100&game_ids[]=" + std::to_string(selectedId), apiKey))["data"];
     
-    std::string filename = "nba_results.csv";
+    std::string filename = "nba_stats_export.csv";
     std::ofstream file(filename);
-    file << "Player,Team,PTS,REB,AST,MIN\n";
+    
+    // CSV Header for Excel
+    file << "Player,Team,PTS,REB,AST,MIN,STL,BLK\n";
 
     int count = 0;
     for (auto& s : stats) {
         if (count >= 50) break;
 
-        std::string mins = s.value("min", "0");
+        // Extracting values safely
+        std::string mins = s.value("min", "");
         int pts = s.value("pts", 0);
+        int reb = s.value("reb", 0);
+        int ast = s.value("ast", 0);
 
-        // Robust filter: if minutes are essentially zero AND they scored zero, they didn't play.
-        if ((mins == "0" || mins == "00" || mins == "0:00" || mins == "") && pts == 0) {
-            continue; 
+        // THE FILTER: Skip if they didn't play (checking multiple indicators)
+        if ((mins == "" || mins == "0" || mins == "00" || mins == "0:00") && pts == 0 && reb == 0) {
+            continue;
         }
 
+        // Write row to CSV
         file << s["player"].value("first_name", "") << " " << s["player"].value("last_name", "") << ","
              << s["team"]["abbreviation"] << ","
              << pts << ","
-             << s.value("reb", 0) << ","
-             << s.value("ast", 0) << ","
-             << mins << "\n";
+             << reb << ","
+             << ast << ","
+             << mins << ","
+             << s.value("stl", 0) << ","
+             << s.value("blk", 0) << "\n";
+        
         count++;
     }
     file.close();
 
-    std::cout << "File saved. Launching..." << std::endl;
-
-    // --- CROSS-PLATFORM OPEN COMMAND ---
-#ifdef _WIN32
-    system(("start excel " + filename).c_str()); // Windows
-#else
-    system(("open " + filename).c_str());        // macOS
-#endif
+    // 3. Launch Excel
+    if (count > 0) {
+        std::cout << "\nFound " << count << " active players. Opening in Excel..." << std::endl;
+        #ifdef _WIN32
+            system(("start excel " + filename).c_str());
+        #else
+            // Try Excel first; if fails, standard open
+            system(("open -a 'Microsoft Excel' " + filename + " || open " + filename).c_str());
+        #endif
+    } else {
+        std::cout << "No active player data found for this specific game." << std::endl;
+    }
 
     return 0;
 }
