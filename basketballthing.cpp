@@ -43,53 +43,50 @@ int main() {
     auto games = gameJson["data"];
     if (games.empty()) { std::cout << "No games found.\n"; return 0; }
 
-    for (int i = 0; i < games.size(); i++) {
+    for (int i = 0; i < (int)games.size(); i++) {
         std::cout << i + 1 << ") " << games[i]["visitor_team"]["abbreviation"] << " @ " << games[i]["home_team"]["abbreviation"] << std::endl;
     }
 
     int gameChoice;
-    std::cout << "\nSelect game number to get ALL stats: ";
+    std::cout << "\nSelect game number: ";
     std::cin >> gameChoice;
     int selectedId = games[gameChoice - 1]["id"];
 
-    // Fetch stats for the whole game
     auto stats = json::parse(apiRequest("https://api.balldontlie.io/v1/stats?per_page=100&game_ids[]=" + std::to_string(selectedId), apiKey))["data"];
     
-    std::string filename = "full_game_stats.csv";
+    std::string filename = "nba_results.csv";
     std::ofstream file(filename);
-
-    // CSV Headers
-    file << "Player,Team,PTS,REB,AST,MIN,STL,BLK,TO\n";
+    file << "Player,Team,PTS,REB,AST,MIN\n";
 
     int count = 0;
     for (auto& s : stats) {
-        if (count >= 50) break; // Hard limit of 50 players
+        if (count >= 50) break;
 
         std::string mins = s.value("min", "0");
-        // Filter out those who didn't play (0 minutes)
-        if (mins == "0" || mins == "00" || mins == "" || mins == "0:00") continue;
+        int pts = s.value("pts", 0);
+
+        // Robust filter: if minutes are essentially zero AND they scored zero, they didn't play.
+        if ((mins == "0" || mins == "00" || mins == "0:00" || mins == "") && pts == 0) {
+            continue; 
+        }
 
         file << s["player"].value("first_name", "") << " " << s["player"].value("last_name", "") << ","
              << s["team"]["abbreviation"] << ","
-             << s.value("pts", 0) << ","
+             << pts << ","
              << s.value("reb", 0) << ","
              << s.value("ast", 0) << ","
-             << mins << ","
-             << s.value("stl", 0) << ","
-             << s.value("blk", 0) << ","
-             << s.value("turnover", 0) << "\n";
-        
+             << mins << "\n";
         count++;
     }
-
     file.close();
 
-    std::cout << "Successfully exported " << count << " players to " << filename << ". Opening Excel...\n";
+    std::cout << "File saved. Launching..." << std::endl;
 
+    // --- CROSS-PLATFORM OPEN COMMAND ---
 #ifdef _WIN32
-    system(("start excel " + filename).c_str());
+    system(("start excel " + filename).c_str()); // Windows
 #else
-    system(("open -a 'Microsoft Excel' " + filename).c_str());
+    system(("open " + filename).c_str());        // macOS
 #endif
 
     return 0;
